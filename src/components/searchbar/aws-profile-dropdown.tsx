@@ -10,6 +10,8 @@ interface Props {
 export default function AWSProfileDropdown({ onProfileSelected }: Props) {
   const [selectedProfile, setSelectedProfile] = useCachedState<string>("aws_profile");
   const profileOptions = useProfileOptions();
+  const vaultSessions = useVaultSessions();
+  const isUsingAwsVault = !!vaultSessions;
 
   useEffect(() => {
     const isSelectedProfileInvalid =
@@ -20,11 +22,8 @@ export default function AWSProfileDropdown({ onProfileSelected }: Props) {
     }
   }, [profileOptions]);
 
-  const vaultSessions = useVaultSessions();
-  const isUsingAwsVault = !!vaultSessions;
-
   useAwsVault({
-    profile: vaultSessions?.includes(selectedProfile || "") ? selectedProfile : undefined,
+    profile: selectedProfile,
     onUpdate: () => onProfileSelected?.(),
   });
 
@@ -53,18 +52,7 @@ export default function AWSProfileDropdown({ onProfileSelected }: Props) {
   return (
     <List.Dropdown tooltip="Select AWS Profile" value={selectedProfile} onChange={setSelectedProfile}>
       {profileOptions.map((profile) => (
-        <List.Dropdown.Item
-          key={profile.name}
-          value={profile.name}
-          title={profile.name}
-          icon={
-            isUsingAwsVault
-              ? vaultSessions.some((session) => session === profile.name)
-                ? Icon.LockUnlocked
-                : Icon.LockDisabled
-              : undefined
-          }
-        />
+        <List.Dropdown.Item key={profile.name} value={profile.name} title={profile.name} />
       ))}
     </List.Dropdown>
   );
@@ -72,7 +60,7 @@ export default function AWSProfileDropdown({ onProfileSelected }: Props) {
 
 const useVaultSessions = (): string[] | undefined => {
   const profileOptions = useProfileOptions();
-  const { data: awsVaultSessions } = useExec("aws-vault", ["list"], {
+  const { data: awsVaultSessions } = useExec("aws-sso", {
     env: { PATH: "/opt/homebrew/bin" },
     onError: () => undefined,
   });
@@ -80,7 +68,7 @@ const useVaultSessions = (): string[] | undefined => {
   const activeSessions = awsVaultSessions
     ?.split(/\r?\n/)
     .filter(isRowWithActiveSession)
-    .map((line) => line.split(" ")[0]);
+    .map((line) => line.trim().split(/\s+\|/)[3]?.trim());
 
   const activeSessionsFromMasterProfile = profileOptions
     .filter((profile) => profile.source_profile && activeSessions?.includes(profile.source_profile))
@@ -90,21 +78,31 @@ const useVaultSessions = (): string[] | undefined => {
 };
 
 const useAwsVault = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFunction }) => {
-  const { revalidate } = useExec("aws-vault", ["exec", profile as string, "--json"], {
+  const { revalidate } = useExec("aws-sso", ["eval", "-p", profile as string], {
     execute: !!profile,
     env: { PATH: "/opt/homebrew/bin" },
+    shell: true,
     onError: () => undefined,
-    onData: (awsCredentials) => {
-      if (awsCredentials) {
-        const { AccessKeyId, SecretAccessKey, SessionToken } = JSON.parse(awsCredentials) as {
-          AccessKeyId: string;
-          SecretAccessKey: string;
-          SessionToken: string;
-        };
-        process.env.AWS_VAULT = profile;
-        process.env.AWS_ACCESS_KEY_ID = AccessKeyId;
-        process.env.AWS_SECRET_ACCESS_KEY = SecretAccessKey;
-        process.env.AWS_SESSION_TOKEN = SessionToken;
+    onData: (env) => {
+      if (env) {
+        // Parse and update process.env with the new env values
+        const envLines = env.split(/\r?\n/);
+        envLines.forEach((line) => {
+          if (line.startsWith("export ")) {
+            let [key, value] = line.slice(7).split("="); // Remove the 'export ' prefix and split
+            // Remove double quotes from the value
+            value = value.replace(/^"|"$/g, "");
+            if (key && value) {
+              process.env[key] = value;
+              if (key === "AWS_SSO_PROFILE") {
+                process.env.AWS_VAULT = value;
+              }
+              if (key === "AWS_DEFAULT_REGION") {
+                process.env.AWS_REGION = value;
+              }
+            }
+          }
+        });
 
         onUpdate();
       }
@@ -141,6 +139,6 @@ const useProfileOptions = (): ProfileOption[] => {
   });
 };
 
-const isRowWithActiveSession = (line: string) =>
-  (line.includes("sts.AssumeRole:") && !line.includes("sts.AssumeRole:-")) ||
-  (line.includes("sts.GetSessionToken:") && !line.includes("sts.GetSessionToken:-"));
+const isRowWithActiveSession = (line: string): boolean => {
+  return !(line.includes("=") || line.includes("Expires") || line.trim().endsWith("|") || !line.trim().length);
+};
