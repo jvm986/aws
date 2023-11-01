@@ -80,7 +80,7 @@ const useVaultSessions = (): string[] | undefined => {
 const useAwsVault = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFunction }) => {
   const { revalidate } = useExec("aws-sso", ["eval", "-p", profile as string], {
     execute: !!profile,
-    env: { PATH: "/opt/homebrew/bin" },
+    env: { PATH: "/opt/homebrew/bin:/usr/bin" },
     shell: true,
     onError: () => undefined,
     onData: (env) => {
