@@ -190,17 +190,16 @@ const useAwsVault = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFu
 };
 
 const useAwsSso = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFunction }) => {
-  const { revalidate } = useExec("aws-sso", ["eval", "-p", profile as string], {
+  const { revalidate } = useExec("aws-sso", ["exec", "-p", profile as string, "--", "env"], {
     execute: !!profile,
     env: { PATH: "/opt/homebrew/bin:/usr/bin" },
-    shell: "/bin/zsh",
+    shell: true,
     onError: (e) => console.log(e),
     onData: (env) => {
       if (env) {
         const envLines = env.split(/\r?\n/);
         envLines.forEach((line) => {
           if (line.startsWith("AWS_")) {
-            console.log(line);
             let [key, value] = line.split("=");
             value = value.replace(/^"|"$/g, "");
             if (key && value) {
@@ -215,7 +214,6 @@ const useAwsSso = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFunc
   });
 
   useEffect(() => {
-    console.log("useAwsSso.useEffect", profile);
     delete process.env.AWS_SSO;
     revalidate();
   }, [profile]);
