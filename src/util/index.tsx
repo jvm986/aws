@@ -22,8 +22,9 @@ export function getExportResponse(response: unknown) {
 export function isReadyToFetch() {
   const isProfileSelected = !!process.env.AWS_PROFILE;
   const isAwsVaultSessionActive = !!process.env.AWS_VAULT;
+  const isAwsSsoSessionActive = !!process.env.AWS_SSO_PROFILE;
 
-  return isProfileSelected || isAwsVaultSessionActive;
+  return isProfileSelected || isAwsVaultSessionActive || isAwsSsoSessionActive;
 }
 
 export function resourceToConsoleLink(resourceId: string | undefined, resourceType: string) {

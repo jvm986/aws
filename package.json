@@ -22,6 +22,29 @@
     "Productivity"
   ],
   "license": "MIT",
+  "preferences": [
+    {
+      "type": "dropdown",
+      "name": "awsAuthMethod",
+      "title": "AWS Authentication Method",
+      "description": "Select your preferred AWS authentication method",
+      "required": true,
+      "data": [
+        {
+          "title": "profile",
+          "value": "profile"
+        },
+        {
+          "title": "aws-sso",
+          "value": "aws-sso"
+        },
+        {
+          "title": "aws-vault",
+          "value": "aws-vault"
+        }
+      ]
+    }
+  ],
   "commands": [
     {
       "name": "ec2",

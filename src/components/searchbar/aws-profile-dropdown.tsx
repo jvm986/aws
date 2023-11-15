@@ -2,16 +2,73 @@ import { Icon, List } from "@raycast/api";
 import { useEffect } from "react";
 import { loadSharedConfigFiles } from "@aws-sdk/shared-ini-file-loader";
 import { useCachedPromise, useCachedState, useExec } from "@raycast/utils";
+import { getPreferenceValues } from "@raycast/api";
 
 interface Props {
   onProfileSelected?: VoidFunction;
 }
 
+interface Preferences {
+  awsAuthMethod: string;
+}
+
+type ProfileOption = {
+  name: string;
+  region?: string;
+  source_profile?: string;
+  credential_process?: string;
+};
+
 export default function AWSProfileDropdown({ onProfileSelected }: Props) {
-  const [selectedProfile, setSelectedProfile] = useCachedState<string>("aws_profile");
+  const preferences = getPreferenceValues<Preferences>();
+  const [selectedProfile, setSelectedProfile] = useCachedState<string>("aws_selected_profile");
   const profileOptions = useProfileOptions();
-  const vaultSessions = useVaultSessions();
-  const isUsingAwsVault = !!vaultSessions;
+  let availableSessions: string[] = [];
+
+  switch (preferences.awsAuthMethod) {
+    case "aws-vault":
+      delete process.env.AWS_PROFILE;
+      delete process.env.AWS_SSO;
+      availableSessions = useVaultSessions();
+      useAwsVault({
+        profile: availableSessions.includes(selectedProfile || "") ? selectedProfile : undefined,
+        onUpdate: () => onProfileSelected?.(),
+      });
+      break;
+    case "aws-sso":
+      delete process.env.AWS_PROFILE;
+      delete process.env.AWS_VAULT;
+      availableSessions = useSsoSessions();
+      useAwsSso({
+        profile: availableSessions.includes(selectedProfile || "") ? selectedProfile : undefined,
+        onUpdate: () => onProfileSelected?.(),
+      });
+      break;
+    default:
+      delete process.env.AWS_VAULT;
+      delete process.env.AWS_SSO;
+      availableSessions = [];
+      break;
+  }
+
+  useEffect(() => {
+    if (selectedProfile && availableSessions.length === 0) {
+      process.env.AWS_PROFILE = selectedProfile;
+    } else {
+      delete process.env.AWS_PROFILE;
+    }
+
+    if (selectedProfile) {
+      process.env.AWS_REGION = profileOptions.find((profile) => profile.name === selectedProfile)?.region;
+    }
+
+    if (!availableSessions.includes(selectedProfile || "")) {
+      delete process.env.AWS_VAULT;
+      delete process.env.AWS_SSO;
+    }
+
+    onProfileSelected?.();
+  }, [selectedProfile]);
 
   useEffect(() => {
     const isSelectedProfileInvalid =
@@ -22,53 +79,80 @@ export default function AWSProfileDropdown({ onProfileSelected }: Props) {
     }
   }, [profileOptions]);
 
-  useAwsVault({
-    profile: selectedProfile,
-    onUpdate: () => onProfileSelected?.(),
-  });
-
-  useEffect(() => {
-    if (selectedProfile && !isUsingAwsVault) {
-      process.env.AWS_PROFILE = selectedProfile;
-    } else {
-      delete process.env.AWS_PROFILE;
-    }
-
-    if (selectedProfile) {
-      process.env.AWS_REGION = profileOptions.find((profile) => profile.name === selectedProfile)?.region;
-    }
-
-    if (!vaultSessions?.includes(selectedProfile || "")) {
-      delete process.env.AWS_VAULT;
-    }
-
-    onProfileSelected?.();
-  }, [selectedProfile, isUsingAwsVault]);
-
   if (!profileOptions || profileOptions.length < 2) {
     return null;
   }
 
   return (
     <List.Dropdown tooltip="Select AWS Profile" value={selectedProfile} onChange={setSelectedProfile}>
-      {profileOptions.map((profile) => (
-        <List.Dropdown.Item key={profile.name} value={profile.name} title={profile.name} />
-      ))}
+      {profileOptions.map((profile) => {
+        if (profile.credential_process?.includes("aws-sso") || profile.credential_process?.includes("aws-vault")) {
+          return (
+            <List.Dropdown.Item
+              key={profile.name}
+              value={profile.name}
+              title={profile.name}
+              icon={
+                preferences.awsAuthMethod === "aws-vault"
+                  ? availableSessions?.some((session) => session === profile.name)
+                    ? Icon.LockUnlocked
+                    : Icon.LockDisabled
+                  : undefined
+              }
+            />
+          );
+        }
+      })}
     </List.Dropdown>
   );
 }
 
-const useVaultSessions = (): string[] | undefined => {
+const useVaultSessions = (): string[] => {
   const profileOptions = useProfileOptions();
-  const { data: awsVaultSessions } = useExec("aws-sso", {
+  const { data: awsVaultSessions } = useExec("aws-vault", ["list"], {
     env: { PATH: "/opt/homebrew/bin" },
-    onError: () => undefined,
+    onError: (e) => console.log(e),
   });
 
+  if (!awsVaultSessions || awsVaultSessions.trim() === "") {
+    return [];
+  }
+
   const activeSessions = awsVaultSessions
+    .split(/\r?\n/)
+    .filter(isVaultRowWithActiveSession)
+    .map((line) => line.split(" ")[0]);
+
+  if (activeSessions.length === 0) {
+    return [];
+  }
+
+  const activeSessionsFromMasterProfile = profileOptions
+    .filter((profile) => profile.source_profile && activeSessions.includes(profile.source_profile))
+    .map((profile) => profile.name);
+
+  return [...activeSessions, ...activeSessionsFromMasterProfile];
+};
+
+const useSsoSessions = (): string[] => {
+  const profileOptions = useProfileOptions();
+  const { data: awsSsoSessions } = useExec("aws-sso", {
+    env: { PATH: "/opt/homebrew/bin" },
+    onError: (e) => console.log(e),
+  });
+
+  if (!awsSsoSessions || awsSsoSessions.trim() === "") {
+    return [];
+  }
+
+  const activeSessions = awsSsoSessions
     ?.split(/\r?\n/)
-    .filter(isRowWithActiveSession)
+    .filter(isSsoRowWithActiveSession)
     .map((line) => line.trim().split(/\s+\|/)[3]?.trim());
+
+  if (activeSessions.length === 0) {
+    return [];
+  }
 
   const activeSessionsFromMasterProfile = profileOptions
     .filter((profile) => profile.source_profile && activeSessions?.includes(profile.source_profile))
@@ -78,31 +162,21 @@ const useVaultSessions = (): string[] | undefined => {
 };
 
 const useAwsVault = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFunction }) => {
-  const { revalidate } = useExec("aws-sso", ["eval", "-p", profile as string], {
+  const { revalidate } = useExec("aws-vault", ["exec", profile as string, "--json"], {
     execute: !!profile,
-    env: { PATH: "/opt/homebrew/bin:/usr/bin" },
-    shell: true,
-    onError: () => undefined,
-    onData: (env) => {
-      if (env) {
-        // Parse and update process.env with the new env values
-        const envLines = env.split(/\r?\n/);
-        envLines.forEach((line) => {
-          if (line.startsWith("export ")) {
-            let [key, value] = line.slice(7).split("="); // Remove the 'export ' prefix and split
-            // Remove double quotes from the value
-            value = value.replace(/^"|"$/g, "");
-            if (key && value) {
-              process.env[key] = value;
-              if (key === "AWS_SSO_PROFILE") {
-                process.env.AWS_VAULT = value;
-              }
-              if (key === "AWS_DEFAULT_REGION") {
-                process.env.AWS_REGION = value;
-              }
-            }
-          }
-        });
+    env: { PATH: "/opt/homebrew/bin" },
+    onError: (e) => console.log(e),
+    onData: (awsCredentials) => {
+      if (awsCredentials) {
+        const { AccessKeyId, SecretAccessKey, SessionToken } = JSON.parse(awsCredentials) as {
+          AccessKeyId: string;
+          SecretAccessKey: string;
+          SessionToken: string;
+        };
+        process.env.AWS_VAULT = profile;
+        process.env.AWS_ACCESS_KEY_ID = AccessKeyId;
+        process.env.AWS_SECRET_ACCESS_KEY = SecretAccessKey;
+        process.env.AWS_SESSION_TOKEN = SessionToken;
 
         onUpdate();
       }
@@ -115,10 +189,36 @@ const useAwsVault = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFu
   }, [profile]);
 };
 
-type ProfileOption = {
-  name: string;
-  region?: string;
-  source_profile?: string;
+const useAwsSso = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFunction }) => {
+  const { revalidate } = useExec("aws-sso", ["eval", "-p", profile as string], {
+    execute: !!profile,
+    env: { PATH: "/opt/homebrew/bin:/usr/bin" },
+    shell: "/bin/zsh",
+    onError: (e) => console.log(e),
+    onData: (env) => {
+      if (env) {
+        const envLines = env.split(/\r?\n/);
+        envLines.forEach((line) => {
+          if (line.startsWith("AWS_")) {
+            console.log(line);
+            let [key, value] = line.split("=");
+            value = value.replace(/^"|"$/g, "");
+            if (key && value) {
+              process.env[key] = value;
+            }
+          }
+        });
+
+        onUpdate();
+      }
+    },
+  });
+
+  useEffect(() => {
+    console.log("useAwsSso.useEffect", profile);
+    delete process.env.AWS_SSO;
+    revalidate();
+  }, [profile]);
 };
 
 const useProfileOptions = (): ProfileOption[] => {
@@ -139,6 +239,10 @@ const useProfileOptions = (): ProfileOption[] => {
   });
 };
 
-const isRowWithActiveSession = (line: string): boolean => {
-  return !(line.includes("=") || line.includes("Expires") || line.trim().endsWith("|") || !line.trim().length);
+const isSsoRowWithActiveSession = (line: string): boolean => {
+  return !(line.includes("=") || line.includes("Expires") || !line.trim().length);
 };
+
+const isVaultRowWithActiveSession = (line: string) =>
+  (line.includes("sts.AssumeRole:") && !line.includes("sts.AssumeRole:-")) ||
+  (line.includes("sts.GetSessionToken:") && !line.includes("sts.GetSessionToken:-"));
