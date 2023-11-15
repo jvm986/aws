@@ -190,20 +190,28 @@ const useAwsVault = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFu
 };
 
 const useAwsSso = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFunction }) => {
-  const { revalidate } = useExec("aws-sso", ["exec", "-p", profile as string, "--", "env"], {
+  const { revalidate } = useExec("aws-sso", ["eval", "-p", profile as string], {
     execute: !!profile,
-    env: { PATH: "/opt/homebrew/bin:/usr/bin" },
+    env: { PATH: "/opt/homebrew/bin:/usr/bin", SHELL: "/bin/sh" },
     shell: true,
-    onError: (e) => console.log(e),
+    onError: () => undefined,
     onData: (env) => {
       if (env) {
+        // Parse and update process.env with the new env values
         const envLines = env.split(/\r?\n/);
         envLines.forEach((line) => {
-          if (line.startsWith("AWS_")) {
-            let [key, value] = line.split("=");
+          if (line.startsWith("export ")) {
+            let [key, value] = line.slice(7).split("="); // Remove the 'export ' prefix and split
+            // Remove double quotes from the value
             value = value.replace(/^"|"$/g, "");
             if (key && value) {
               process.env[key] = value;
+              if (key === "AWS_SSO_PROFILE") {
+                process.env.AWS_VAULT = value;
+              }
+              if (key === "AWS_DEFAULT_REGION") {
+                process.env.AWS_REGION = value;
+              }
             }
           }
         });
