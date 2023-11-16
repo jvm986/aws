@@ -197,21 +197,13 @@ const useAwsSso = ({ profile, onUpdate }: { profile?: string; onUpdate: VoidFunc
     onError: () => undefined,
     onData: (env) => {
       if (env) {
-        // Parse and update process.env with the new env values
         const envLines = env.split(/\r?\n/);
         envLines.forEach((line) => {
           if (line.startsWith("export ")) {
-            let [key, value] = line.slice(7).split("="); // Remove the 'export ' prefix and split
-            // Remove double quotes from the value
+            let [key, value] = line.slice(7).split("=");
             value = value.replace(/^"|"$/g, "");
             if (key && value) {
               process.env[key] = value;
-              if (key === "AWS_SSO_PROFILE") {
-                process.env.AWS_VAULT = value;
-              }
-              if (key === "AWS_DEFAULT_REGION") {
-                process.env.AWS_REGION = value;
-              }
             }
           }
         });
