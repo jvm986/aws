@@ -147,7 +147,7 @@ const useSsoSessions = (): string[] => {
 
   const activeSessions = awsSsoSessions
     ?.split(/\r?\n/)
-    .filter(isSsoRowWithActiveSession)
+    .filter(isSsoRowWithAvailableSession)
     .map((line) => line.trim().split(/\s+\|/)[3]?.trim());
 
   if (activeSessions.length === 0) {
@@ -237,7 +237,7 @@ const useProfileOptions = (): ProfileOption[] => {
   });
 };
 
-const isSsoRowWithActiveSession = (line: string): boolean => {
+const isSsoRowWithAvailableSession = (line: string): boolean => {
   return !(line.includes("=") || line.includes("Expires") || !line.trim().length);
 };
 
